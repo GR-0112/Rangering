@@ -20,6 +20,11 @@ jobs:
         with:
           node-version: 18
 
+      - name: Installer avhengigheter
+        run: |
+          npm init -y
+          npm install puppeteer
+
       - name: Kjør agent
         run: node agent/run.js
         env:
