@@ -78,9 +78,9 @@ function guessMainKeyword(html, urlStr) {
 }
 
 /**
- * Gjet lokasjon (område) fra tekst som "2830 Raufoss"
+ * Gjet by (sted) fra "2830 Raufoss" eller lignende
  */
-function guessLocation(html) {
+function guessCity(html) {
   const lower = html.toLowerCase();
   const match = lower.match(/\b(\d{4})\s+([a-zæøå\- ]{2,})\b/);
   if (match) {
@@ -96,7 +96,43 @@ function guessLocation(html) {
         .join(' ');
     }
   }
-  return 'ditt område';
+  return null;
+}
+
+/**
+ * Gjet region/fylke ved å se etter fylkesnavn eller generelle områdeord
+ */
+function guessRegion(html) {
+  const lower = html.toLowerCase();
+  const regions = [
+    'innlandet',
+    'vestland',
+    'rogaland',
+    'trøndelag',
+    'nordland',
+    'oslo',
+    'viken',
+    'vestfold og telemark',
+    'møre og romsdal',
+    'troms og finnmark',
+    'agder',
+    'telemark',
+    'buskerud',
+    'hordaland',
+    'sogn og fjordane',
+    'oppland',
+    'hedmark'
+  ];
+
+  for (const r of regions) {
+    if (lower.includes(r)) {
+      return r
+        .split(' ')
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join(' ');
+    }
+  }
+  return null;
 }
 
 /**
@@ -121,7 +157,7 @@ function findContrastExamples(html) {
     examples.push(`fargekode: ${s[1]}`);
   }
 
-  // se også etter body { color: ... } i inline <style>
+  // Se også etter body { color: ... } i inline <style>
   const styleBlocks = html.match(/<style[^>]*>([\s\S]*?)<\/style>/gi) || [];
   for (const block of styleBlocks) {
     const bodyMatch = block.match(/body\s*{[^}]*color:\s*(#[0-9a-fA-F]{3,6})/i);
@@ -182,9 +218,8 @@ function analyseHtml(html) {
     /faq|ofte stilte spørsmål/.test(html.toLowerCase()) ||
     /<details[^>]*>[\s\S]*?<summary[^>]*>/i.test(html);
 
-  const hasSchema = /type=['"]application\/ld\+json['"]/.test(
-    html.toLowerCase()
-  );
+  const hasSchema =
+    /type=['"]application\/ld\+json['"]/.test(html.toLowerCase());
 
   const veryLowText = textLength < 1500;
 
@@ -198,11 +233,10 @@ function analyseHtml(html) {
 
   const missingAltCount = countMissingAlt(html);
 
-  // Hastighet (grov): mange bilder + mange scripts
   const imgCount = (html.match(/<img[^>]*>/gi) || []).length;
   const scriptCount = (html.match(/<script[^>]*>/gi) || []).length;
 
-  // SEO-score
+  // SEO-score (enkel heuristikk)
   let seoScore = 100;
   if (!hasSchema) seoScore -= 20;
   if (veryLowText) seoScore -= 20;
@@ -238,66 +272,75 @@ function seoLabel(score) {
 }
 
 /**
- * Tell forekomst av et søkeord i tekst
+ * Lag "Realistisk rangering"-tabell i stil med rapport 8
+ * Søkeord | Forventet synlighet | Hvorfor
  */
-function countOccurrences(textLower, term) {
-  const t = term.toLowerCase();
-  if (!t.trim()) return 0;
-  const regex = new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-  const matches = textLower.match(regex);
-  return matches ? matches.length : 0;
-}
-
-/**
- * Lag tabell for forventet rangering på søkeord
- */
-function buildKeywordTable(mainKeyword, location, textOnly, seoScore) {
+function buildRankingTable(mainKeyword, city, region, seoScore, textOnly) {
   const textLower = textOnly.toLowerCase();
 
-  const baseTerms = [
-    `${mainKeyword} ${location}`,
-    `${mainKeyword} pris ${location}`,
-    `beste ${mainKeyword} ${location}`
-  ];
+  const terms = [];
+  if (city) {
+    terms.push(`${mainKeyword} ${city}`);
+    terms.push(`beste ${mainKeyword} ${city}`);
+  }
+  if (region) {
+    terms.push(`${mainKeyword} ${region}`);
+    terms.push(`beste ${mainKeyword} ${region}`);
+  }
 
-  const rows = baseTerms.map((term) => {
-    const occ = countOccurrences(textLower, term);
-    let usageLabel;
-    if (occ >= 3) usageLabel = 'Bra bruk på nettsiden';
-    else if (occ >= 1) usageLabel = 'Forbedringspotensiale';
-    else usageLabel = 'Ingen egen tekst';
+  if (!terms.length) {
+    terms.push(`${mainKeyword}`);
+    terms.push(`beste ${mainKeyword}`);
+  }
 
-    let range;
-    if (occ >= 3 && seoScore >= 80) range = '50–70';
-    else if (occ >= 3) range = '30–50';
-    else if (occ >= 1) range = '10–30';
-    else range = 'Under 10';
+  const uniqueTerms = [...new Set(terms)];
 
-    return { term, usageLabel, range };
-  });
+  function occ(term) {
+    const t = term.toLowerCase();
+    if (!t.trim()) return 0;
+    const regex = new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    const matches = textLower.match(regex);
+    return matches ? matches.length : 0;
+  }
+
+  function expectedVisibility(score, count) {
+    if (count >= 3 && score >= 80) return 'Middels–god';
+    if (count >= 1 && score >= 60) return 'Middels–svak';
+    if (count >= 1) return 'Svak';
+    return 'Svak';
+  }
+
+  function why(score, count) {
+    if (count === 0) return 'ingen egen tekst / lite relevant innhold';
+    if (!score || score < 60) return 'begrenset innhold og lite strukturert data';
+    return 'har noe innhold, men kan styrkes med mer faglig tekst og struktur';
+  }
 
   let out = '';
-  out += `Forventet rangering på søkeord\n`;
-  out += `Søkeord                        | På nettsiden              | Forventet rangering\n`;
-  out += `------------------------------- | ------------------------- | -------------------\n`;
+  out += `Realistisk rangering i Google for nettstedet (basert på innholdet, ikke faktiske målinger)\n`;
+  out += `Søkeord                           | Forventet synlighet | Hvorfor\n`;
+  out += `--------------------------------- | ------------------- | ---------------------------------------------\n`;
 
-  rows.forEach((r) => {
-    const term = r.term.padEnd(30, ' ');
-    const usage = r.usageLabel.padEnd(25, ' ');
-    out += `${term} | ${usage} | ${r.range}\n`;
+  uniqueTerms.forEach((term) => {
+    const count = occ(term);
+    const vis = expectedVisibility(seoScore, count);
+    const reason = why(seoScore, count);
+    const termCol = term.padEnd(33, ' ');
+    const visCol = vis.padEnd(19, ' ');
+    out += `${termCol} | ${visCol} | ${reason}\n`;
   });
 
   return out;
 }
 
 /**
- * Dynamiske overskrifter for hver kategori – velg basert på "seed"
+ * Dynamiske overskrifter per kategori – basert på tekster du liker
  */
 function pickSeoHeadline(seed) {
   const headlines = [
-    'Google forstår ikke innholdet på nettsiden din',
+    'Google forstår ikke hva dette selskapet tilbyr',
     'Dårlig SEO som Google ikke liker',
-    'Google sliter med å forstå hva dere faktisk tilbyr',
+    'Google sliter med å forstå innholdet på nettsiden',
     'Dårlig innhold og hierarki gir lavere rangering i søkemotorene'
   ];
   return headlines[seed % headlines.length];
@@ -305,10 +348,10 @@ function pickSeoHeadline(seed) {
 
 function pickUuHeadline(seed) {
   const headlines = [
-    'Dårlig kontrast gir dårligere Google‑score',
     'Brudd på UU = potensielle bøter',
+    'Dårlig kontrast gir dårligere Google‑score',
     'Kunder går glipp av viktig informasjon på grunn av dårlig kontrast',
-    'Siden bryter trolig UU‑krav – det gir risiko for bøter'
+    'Siden bryter sannsynligvis UU‑krav – det gir risiko for bøter'
   ];
   return headlines[seed % headlines.length];
 }
@@ -316,9 +359,9 @@ function pickUuHeadline(seed) {
 function pickSpeedHeadline(seed) {
   const headlines = [
     'Lav page speed gir utålmodige kunder',
-    'Ikke kast bort tiden til dine besøkende – få opp farta',
     'Lav page speed = lavere rangering på Google',
-    'Siden din oppleves treg – det koster deg kunder'
+    'Din PageSpeed er svak, kunder mister tålmodigheten',
+    'Ikke kast bort tiden til dine besøkende – få opp farta'
   ];
   return headlines[seed % headlines.length];
 }
@@ -334,9 +377,9 @@ function pickAeoHeadline(seed) {
 }
 
 /**
- * Bygg Del 2 – "Hvorfor [url] scorer dårlig..."
+ * Del 2 – "Hvorfor [url] scorer dårlig..."
  */
-function buildProblemsSection(url, mainKeyword, location, analysis) {
+function buildProblemsSection(url, mainKeyword, city, region, analysis) {
   const {
     textLength,
     hasSchema,
@@ -348,47 +391,47 @@ function buildProblemsSection(url, mainKeyword, location, analysis) {
     scriptCount
   } = analysis;
 
+  const seed = textLength || 1;
+
   let out = '';
   out += `Del 2\n`;
   out += `Hvorfor ${url} scorer dårlig i søkemotorene\n\n`;
-
-  const seed = textLength || 1;
 
   // 1 / SEO
   out += `1 / SEO\n`;
   out += `${pickSeoHeadline(seed)}\n\n`;
   out += `Hvorfor?\n`;
-
   if (!hasSchema) out += `- Mangler strukturert data (schema)\n`;
   if (textLength < 3000)
-    out += `- Lite forklarende og faglig relevant tekst (ca. ${textLength} tegn)\n`;
+    out += `- Lite faglig og forklarende tekst (ca. ${textLength} tegn)\n`;
   if (!hasServiceWords)
-    out += `- Få tjeneste-overskrifter som svarer på det kundene søker etter\n`;
+    out += `- Få relevante tjeneste-overskrifter som treffer søkeord målgruppen bruker\n`;
   if (hasSchema && textLength >= 3000 && hasServiceWords)
-    out += `- Det finnes noe struktur, men fortsatt rom for bedre faglig innhold og tydeligere struktur\n`;
+    out += `- Det finnes noe struktur, men innholdet kan fortsatt styrkes for å gi Google tydeligere signaler\n`;
 
   out += `\nHva kan skje?\n`;
-  out += `→ Google prioriterer sider med bedre struktur og innhold\n`;
-  out += `→ Lav synlighet og færre kunder fra søk som "${mainKeyword} ${location}"\n\n\n`;
+  out += `→ Google prioriterer konkurrerende sider med bedre struktur og innhold\n`;
+  out += `→ Lav synlighet og færre kunder fra søk som "${mainKeyword} ${city || region || 'ditt område'}"\n\n\n`;
 
   // 2 / Universell utforming
   out += `2 / Universell utforming\n`;
   out += `${pickUuHeadline(seed)}\n\n`;
   out += `Hvorfor?\n`;
-
   if (contrastRisk === 'høy')
     out += `- Mange tegn på svak kontrast (lys tekst mot lys bakgrunn)\n`;
   else if (contrastRisk === 'middels')
-    out += `- Noe risiko for svak kontrast på tekst og knapper\n`;
+    out += `- Flere eksempler på lys tekst som kan være vanskelig å lese\n`;
   if (contrastExamples.length) {
     out += `- Eksempler på potensielt problematisk tekstfarge/klasse:\n`;
     contrastExamples.slice(0, 3).forEach((ex) => (out += `  * ${ex}\n`));
   }
+  if (!contrastExamples.length && contrastRisk === 'lav')
+    out += `- Ingen åpenbare kontrastproblemer i enkel automatisk kontroll\n`;
 
   out += `\nHva kan skje?\n`;
   out += `→ Dårlig kontrast skaper irritasjon hos brukerne\n`;
   out += `→ Gjør det vanskelig, om ikke umulig, for eldre og svaksynte å lese innholdet\n`;
-  out += `→ Hvis du kjører annonser, kan det bli dyrere fordi siden konverterer dårligere\n`;
+  out += `→ Hvis dere kjører annonser, kan dårlig UU gi lavere effekt og dyrere klikk\n`;
   out += `→ Kan i verste fall gi bøter fra UU-tilsynet\n\n\n`;
 
   // 3 / Page Speed
@@ -400,11 +443,11 @@ function buildProblemsSection(url, mainKeyword, location, analysis) {
   if (scriptCount > 10)
     out += `- Det lastes inn mange JavaScript-filer (${scriptCount} scripts), noe som kan forsinke innholdet\n`;
   if (imgCount <= 20 && scriptCount <= 10)
-    out += `- Det er begrenset med åpenbare tegn på tung side, men struktur og kode kan fortsatt optimaliseres\n`;
+    out += `- Ingen åpenbare tegn på ekstremt tung side, men struktur og kode kan fortsatt optimaliseres\n`;
 
   out += `\nHva kan skje?\n`;
   out += `→ AI‑søk (ChatGPT, CoPilot) velger ofte bort trege sider\n`;
-  out += `→ Brukerne kan miste tålmodighet hvis siden føles treg\n`;
+  out += `→ Brukerne kan miste tålmodighet hvis siden oppleves treg\n`;
   out += `→ Lavere rangering på Google når PageSpeed er svakere enn konkurrentenes\n\n\n`;
 
   // 4 / AEO – AI-synlighet
@@ -414,11 +457,11 @@ function buildProblemsSection(url, mainKeyword, location, analysis) {
   if (!hasSchema) out += `- Ingen schema for "LocalBusiness" eller andre strukturtyper funnet\n`;
   if (!hasFAQ) out += `- Ingen FAQ eller spørsmålsbasert innhold funnet\n`;
   if (hasSchema && hasFAQ)
-    out += `- Det finnes noe strukturert data, men det er fortsatt lite tydelig innhold som AI og Google kan bruke i svar\n`;
+    out += `- Det finnes noe strukturert data, men lite tydelig Q&A-innhold som AI og Google kan bruke i svar\n`;
 
   out += `\nHva kan skje?\n`;
-  out += `→ AI leser primært maskinlesbart innhold. Du kan risikere at siden ikke dukker opp i AI-genererte svar\n`;
-  out += `→ Konkurrenter som har FAQ og strukturert data får forsprang i nye søkekanaler\n`;
+  out += `→ AI leser primært maskinlesbart innhold. Dere kan risikere at siden ikke dukker opp i AI-genererte svar\n`;
+  out += `→ Konkurrenter som har FAQ og strukturert data får et forsprang i nye søkekanaler\n`;
 
   return out;
 }
@@ -456,23 +499,31 @@ function buildReport(url, html, analysis) {
   const { seoScore, textOnly } = analysis;
   const label = seoLabel(seoScore);
   const mainKeyword = guessMainKeyword(html, url);
-  const location = guessLocation(html);
+
+  const city = guessCity(html);
+  const region = guessRegion(html) || city || 'ditt område';
+
+  let out = '';
 
   // Del 1
-  let out = '';
   out += `Del 1\n`;
   out += `Din side (${url})\n`;
   out += `har fått en SEO‑score på\n`;
   out += `${seoScore} / 100 (${label})\n\n`;
 
   out += `Nettsiden ${url} rangerer trolig svakere enn den kunne på bransjesøk som\n`;
-  out += `"${mainKeyword} ${location}", "beste ${mainKeyword} ${location}" og "${mainKeyword} pris ${location}".\n\n`;
+  if (city) {
+    out += `"${mainKeyword} ${city}", "beste ${mainKeyword} ${city}"`;
+    out += region && region !== city ? ` og "${mainKeyword} ${region}".\n\n` : `. \n\n`;
+  } else {
+    out += `"${mainKeyword} ${region}", "beste ${mainKeyword} ${region}" og "${mainKeyword} pris ${region}".\n\n`;
+  }
 
-  out += buildKeywordTable(mainKeyword, location, textOnly, seoScore);
+  out += buildRankingTable(mainKeyword, city, region, seoScore, textOnly);
   out += `\n\n`;
 
   // Del 2
-  out += buildProblemsSection(url, mainKeyword, location, analysis);
+  out += buildProblemsSection(url, mainKeyword, city, region, analysis);
   out += `\n\n`;
 
   // Del 3
