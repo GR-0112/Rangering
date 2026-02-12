@@ -1,0 +1,32 @@
+name: Konkurrent-Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'URL som skal analyseres (inkl. https://)'
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Sjekk ut repo
+        uses: actions/checkout@v4
+
+      - name: Sett opp Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Kjør agent
+        run: node agent/run.js
+        env:
+          TARGET_URL: ${{ github.event.inputs.url }}
+
+      - name: Last opp rapport
+        uses: actions/upload-artifact@v4
+        with:
+          name: salgsrapport
+          path: SALGS-RAPPORT.txt
